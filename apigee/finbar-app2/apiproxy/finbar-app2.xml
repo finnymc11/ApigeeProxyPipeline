@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<APIProxy name="finbar-app2">
+  <Description>Proxy for Azure Function finbar-app2</Description>
+  <ProxyEndpoints>
+    <ProxyEndpoint>default</ProxyEndpoint>
+  </ProxyEndpoints>
+  <TargetEndpoints>
+    <TargetEndpoint>finbar-app2-target</TargetEndpoint>
+  </TargetEndpoints>
+</APIProxy>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ProxyEndpoint name="default">
+  <Description>Default proxy endpoint for finbar-app2</Description>
+  <HTTPProxyConnection>
+    <BasePath>/finbar-app2</BasePath>
+    <VirtualHost>default</VirtualHost>
+  </HTTPProxyConnection>
+    <RouteRule name="default">
+      <TargetEndpoint>finbar-app2-target</TargetEndpoint>
+    </RouteRule>
+</ProxyEndpoint>
