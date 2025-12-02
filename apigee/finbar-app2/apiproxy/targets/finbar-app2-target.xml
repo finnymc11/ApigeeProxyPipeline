@@ -2,6 +2,6 @@
 <TargetEndpoint name="finbar-app2-target">
   <Description>Azure Function backend for finbar-app2</Description>
   <HTTPTargetConnection>
-    <URL>https://finbar-app2-hzfvbjcsf3f7d3cg.eastus2-01.azurewebsites.net/api/helloworld</URL>
+    <URL>https://finbar-app2-cueqd7c9ejbkd3cm.eastus2-01.azurewebsites.net/api/helloworld</URL>
   </HTTPTargetConnection>
 </TargetEndpoint>
