@@ -4,7 +4,7 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  # Apigee org & env (override in UI or variable group if needed)
+  # Apigee org & env
   APIGEE_ORG: 'finbar-project'
   APIGEE_ENV: 'eval'
   PROXY_NAME: 'finbar-app2'
@@ -20,6 +20,7 @@ steps:
     inputs:
       targetType: 'inline'
       script: |
+        set -e
         echo "Installing gcloud..."
         sudo apt-get update -y
         sudo apt-get install -y apt-transport-https ca-certificates gnupg
@@ -35,44 +36,73 @@ steps:
     inputs:
       targetType: 'inline'
       script: |
-        # Expecting a service account JSON in a secure pipeline variable
+        set -e
+
+        echo "Authenticating to Google Cloud using service account..."
+
+        # 1️⃣ Ensure the JSON key is present
+        if [ -z "$GCLOUD_SERVICE_ACCOUNT_KEY" ]; then
+          echo "ERROR: GCLOUD_SERVICE_ACCOUNT_KEY is not set."
+          echo "Make sure it's configured as a secret variable in Azure DevOps."
+          exit 1
+        fi
+
+        # 2️⃣ Write the JSON key to a file
         echo "$GCLOUD_SERVICE_ACCOUNT_KEY" > ${HOME}/gcloud-key.json
 
+        # 3️⃣ Activate the service account
+        echo "Activating service account..."
         gcloud auth activate-service-account --key-file=${HOME}/gcloud-key.json
+
+        # 4️⃣ Set the project
+        echo "Setting project to $(GCP_PROJECT_ID)..."
         gcloud config set project $(GCP_PROJECT_ID)
 
+        # 5️⃣ Show accounts for debugging
+        echo "Current gcloud accounts (one should be ACTIVE):"
+        gcloud auth list
+
+        echo "gcloud authentication completed successfully."
     env:
-      GCLOUD_SERVICE_ACCOUNT_KEY: $(GCLOUD_SERVICE_ACCOUNT_KEY)  # set this as a secret variable in Azure DevOps
+      GCLOUD_SERVICE_ACCOUNT_KEY: $(GCLOUD_SERVICE_ACCOUNT_KEY)  # secret variable in Azure DevOps
 
   - task: Bash@3
-    displayName: 'Enable gcloud Apigee commands (if needed)'
+    displayName: 'Check gcloud components (optional)'
     inputs:
       targetType: 'inline'
       script: |
-        # (Optional) Install alpha/beta components if required
-        gcloud components list
+        set -e
+        gcloud components list || true
 
   - task: Bash@3
     displayName: 'Zip Apigee proxy bundle'
     inputs:
       targetType: 'inline'
       script: |
+        set -e
         echo "Zipping Apigee proxy from $(PROXY_DIR)..."
-        cd $(PROXY_DIR)
-        zip -r ../../$(PROXY_ZIP) apiproxy
-        cd - 
-        ls -la
+        cd "$(PROXY_DIR)"
+        zip -r "../../$(PROXY_ZIP)" apiproxy
+        cd -
+        echo "Created zip:"
+        ls -la "$(PROXY_ZIP)"
 
   - task: Bash@3
     displayName: 'Import proxy into Apigee'
     inputs:
       targetType: 'inline'
       script: |
+        set -e
         echo "Importing proxy $(PROXY_NAME) into Apigee org $(APIGEE_ORG)..."
 
         ACCESS_TOKEN=$(gcloud auth print-access-token)
 
-        # Create or update the proxy
+        if [ -z "$ACCESS_TOKEN" ]; then
+          echo "ERROR: Failed to get access token from gcloud."
+          gcloud auth list
+          exit 1
+        fi
+
         curl -X POST \
           -H "Authorization: Bearer ${ACCESS_TOKEN}" \
           -H "Content-Type: multipart/form-data" \
@@ -80,13 +110,22 @@ steps:
           "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?name=$(PROXY_NAME)" \
           --fail --silent --show-error
 
+        echo "Proxy import completed."
+
   - task: Bash@3
     displayName: 'Get latest proxy revision number'
     name: GetRevision
     inputs:
       targetType: 'inline'
       script: |
+        set -e
         ACCESS_TOKEN=$(gcloud auth print-access-token)
+
+        if [ -z "$ACCESS_TOKEN" ]; then
+          echo "ERROR: Failed to get access token from gcloud."
+          gcloud auth list
+          exit 1
+        fi
 
         echo "Fetching revisions for $(PROXY_NAME)..."
 
@@ -96,18 +135,33 @@ steps:
         echo "Revisions: $REVISIONS"
 
         # Take the highest revision number
-        LATEST_REVISION=$(echo $REVISIONS | tr -d '[]" ' | tr ',' '\n' | sort -n | tail -1)
+        LATEST_REVISION=$(echo "$REVISIONS" | tr -d '[]" ' | tr ',' '\n' | sort -n | tail -1)
+
+        if [ -z "$LATEST_REVISION" ]; then
+          echo "ERROR: Could not determine latest revision."
+          exit 1
+        fi
+
         echo "Latest revision is: $LATEST_REVISION"
 
-        echo "##vso[task.setvariable variable=LATEST_REVISION;isOutput=true]$LATEST_REVISION"
+        # Set a pipeline variable for later steps
+        echo "##vso[task.setvariable variable=LATEST_REVISION]$LATEST_REVISION"
 
   - task: Bash@3
     displayName: 'Deploy proxy to Apigee environment'
     inputs:
       targetType: 'inline'
       script: |
+        set -e
         ACCESS_TOKEN=$(gcloud auth print-access-token)
-        LATEST_REVISION=$(GetRevision.LATEST_REVISION)
+
+        if [ -z "$ACCESS_TOKEN" ]; then
+          echo "ERROR: Failed to get access token from gcloud."
+          gcloud auth list
+          exit 1
+        fi
+
+        LATEST_REVISION=$(LATEST_REVISION)
 
         echo "Deploying proxy $(PROXY_NAME) revision ${LATEST_REVISION} to env $(APIGEE_ENV)..."
 
