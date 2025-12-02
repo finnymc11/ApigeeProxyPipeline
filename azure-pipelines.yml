@@ -1,0 +1,119 @@
+trigger: none  # run manually; you can change to trigger on branch if you want
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Apigee org & env (override in UI or variable group if needed)
+  APIGEE_ORG: 'finbar-project'
+  APIGEE_ENV: 'eval'
+  PROXY_NAME: 'finbar-app2'
+  PROXY_DIR: 'apigee/finbar-app2'
+  PROXY_ZIP: 'finbar-app2.zip'
+
+  # GCP project for Apigee
+  GCP_PROJECT_ID: 'finbar-project'
+
+steps:
+  - task: Bash@3
+    displayName: 'Install gcloud SDK'
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo "Installing gcloud..."
+        sudo apt-get update -y
+        sudo apt-get install -y apt-transport-https ca-certificates gnupg
+        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+        sudo apt-get update -y && sudo apt-get install -y google-cloud-sdk
+
+        echo "gcloud version:"
+        gcloud version
+
+  - task: Bash@3
+    displayName: 'Authenticate gcloud (service account)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        # Expecting a service account JSON in a secure pipeline variable
+        echo "$GCLOUD_SERVICE_ACCOUNT_KEY" > ${HOME}/gcloud-key.json
+
+        gcloud auth activate-service-account --key-file=${HOME}/gcloud-key.json
+        gcloud config set project $(GCP_PROJECT_ID)
+
+    env:
+      GCLOUD_SERVICE_ACCOUNT_KEY: $(GCLOUD_SERVICE_ACCOUNT_KEY)  # set this as a secret variable in Azure DevOps
+
+  - task: Bash@3
+    displayName: 'Enable gcloud Apigee commands (if needed)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        # (Optional) Install alpha/beta components if required
+        gcloud components list
+
+  - task: Bash@3
+    displayName: 'Zip Apigee proxy bundle'
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo "Zipping Apigee proxy from $(PROXY_DIR)..."
+        cd $(PROXY_DIR)
+        zip -r ../../$(PROXY_ZIP) apiproxy
+        cd - 
+        ls -la
+
+  - task: Bash@3
+    displayName: 'Import proxy into Apigee'
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo "Importing proxy $(PROXY_NAME) into Apigee org $(APIGEE_ORG)..."
+
+        ACCESS_TOKEN=$(gcloud auth print-access-token)
+
+        # Create or update the proxy
+        curl -X POST \
+          -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+          -H "Content-Type: multipart/form-data" \
+          -F "file=@$(PROXY_ZIP)" \
+          "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?name=$(PROXY_NAME)" \
+          --fail --silent --show-error
+
+  - task: Bash@3
+    displayName: 'Get latest proxy revision number'
+    name: GetRevision
+    inputs:
+      targetType: 'inline'
+      script: |
+        ACCESS_TOKEN=$(gcloud auth print-access-token)
+
+        echo "Fetching revisions for $(PROXY_NAME)..."
+
+        REVISIONS=$(curl -s -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+          "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis/$(PROXY_NAME)/revisions")
+
+        echo "Revisions: $REVISIONS"
+
+        # Take the highest revision number
+        LATEST_REVISION=$(echo $REVISIONS | tr -d '[]" ' | tr ',' '\n' | sort -n | tail -1)
+        echo "Latest revision is: $LATEST_REVISION"
+
+        echo "##vso[task.setvariable variable=LATEST_REVISION;isOutput=true]$LATEST_REVISION"
+
+  - task: Bash@3
+    displayName: 'Deploy proxy to Apigee environment'
+    inputs:
+      targetType: 'inline'
+      script: |
+        ACCESS_TOKEN=$(gcloud auth print-access-token)
+        LATEST_REVISION=$(GetRevision.LATEST_REVISION)
+
+        echo "Deploying proxy $(PROXY_NAME) revision ${LATEST_REVISION} to env $(APIGEE_ENV)..."
+
+        curl -X POST \
+          -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+          "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/environments/$(APIGEE_ENV)/apis/$(PROXY_NAME)/revisions/${LATEST_REVISION}/deployments" \
+          --fail --silent --show-error
+
+        echo "Deployment triggered."
