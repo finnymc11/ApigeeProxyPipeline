@@ -87,30 +87,39 @@ steps:
         echo "Created zip:"
         ls -la "$(PROXY_ZIP)"
 
-  - task: Bash@3
-    displayName: 'Import proxy into Apigee'
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        echo "Importing proxy $(PROXY_NAME) into Apigee org $(APIGEE_ORG)..."
+- task: Bash@3
+  displayName: 'Import proxy into Apigee'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
+      echo "Importing proxy $(PROXY_NAME) into Apigee org $(APIGEE_ORG)..."
 
-        ACCESS_TOKEN=$(gcloud auth print-access-token)
+      ACCESS_TOKEN=$(gcloud auth print-access-token)
 
-        if [ -z "$ACCESS_TOKEN" ]; then
-          echo "ERROR: Failed to get access token from gcloud."
-          gcloud auth list
-          exit 1
-        fi
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "ERROR: Failed to get access token from gcloud."
+        gcloud auth list
+        exit 1
+      fi
 
-        curl -X POST \
-          -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-          -H "Content-Type: multipart/form-data" \
-          -F "file=@$(PROXY_ZIP)" \
-          "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?name=$(PROXY_NAME)" \
-          --fail --silent --show-error
+      HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
+        -X POST \
+        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+        -H "Content-Type: multipart/form-data" \
+        -F "file=@$(PROXY_ZIP)" \
+        "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?name=$(PROXY_NAME)")
 
-        echo "Proxy import completed."
+      echo "HTTP status: $HTTP_STATUS"
+      echo "Response body:"
+      cat response.json || echo "<no body>"
+
+      if [ "$HTTP_STATUS" -ge 400 ]; then
+        echo "Import failed with HTTP $HTTP_STATUS"
+        exit 1
+      fi
+
+      echo "Proxy import completed."
 
   - task: Bash@3
     displayName: 'Get latest proxy revision number'
