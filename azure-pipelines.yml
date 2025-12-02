@@ -1,4 +1,4 @@
-trigger: none  # run manually; you can change to trigger on branch if you want
+trigger: none  # run manually
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -15,168 +15,170 @@ variables:
   GCP_PROJECT_ID: 'finbar-project'
 
 steps:
-  - task: Bash@3
-    displayName: 'Install gcloud SDK'
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        echo "Installing gcloud..."
-        sudo apt-get update -y
-        sudo apt-get install -y apt-transport-https ca-certificates gnupg
-        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
-        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
-        sudo apt-get update -y && sudo apt-get install -y google-cloud-sdk
+- task: Bash@3
+  displayName: 'Install gcloud SDK'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
+      echo "Installing gcloud..."
+      sudo apt-get update -y
+      sudo apt-get install -y apt-transport-https ca-certificates gnupg
+      echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+      curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+      sudo apt-get update -y && sudo apt-get install -y google-cloud-sdk
 
-        echo "gcloud version:"
-        gcloud version
+      echo "gcloud version:"
+      gcloud version
 
-  - task: Bash@3
-    displayName: 'Authenticate gcloud (service account)'
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
+- task: Bash@3
+  displayName: 'Authenticate gcloud (service account)'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
 
-        echo "Authenticating to Google Cloud using service account..."
+      echo "Authenticating to Google Cloud using service account..."
 
-        # 1️⃣ Ensure the JSON key is present
-        if [ -z "$GCLOUD_SERVICE_ACCOUNT_KEY" ]; then
-          echo "ERROR: GCLOUD_SERVICE_ACCOUNT_KEY is not set."
-          echo "Make sure it's configured as a secret variable in Azure DevOps."
-          exit 1
-        fi
+      # Ensure the JSON key is present
+      if [ -z "$GCLOUD_SERVICE_ACCOUNT_KEY" ]; then
+        echo "ERROR: GCLOUD_SERVICE_ACCOUNT_KEY is not set."
+        echo "Make sure it's configured as a secret variable in Azure DevOps."
+        exit 1
+      fi
 
-        # 2️⃣ Write the JSON key to a file
-        echo "$GCLOUD_SERVICE_ACCOUNT_KEY" > ${HOME}/gcloud-key.json
+      # Write the JSON key to a file
+      echo "$GCLOUD_SERVICE_ACCOUNT_KEY" > ${HOME}/gcloud-key.json
 
-        # 3️⃣ Activate the service account
-        echo "Activating service account..."
-        gcloud auth activate-service-account --key-file=${HOME}/gcloud-key.json
+      # Activate the service account
+      echo "Activating service account..."
+      gcloud auth activate-service-account --key-file=${HOME}/gcloud-key.json
 
-        # 4️⃣ Set the project
-        echo "Setting project to $(GCP_PROJECT_ID)..."
-        gcloud config set project $(GCP_PROJECT_ID)
+      # Set the project
+      echo "Setting project to $(GCP_PROJECT_ID)..."
+      gcloud config set project $(GCP_PROJECT_ID)
 
-        # 5️⃣ Show accounts for debugging
-        echo "Current gcloud accounts (one should be ACTIVE):"
+      # Show accounts for debugging
+      echo "Current gcloud accounts (one should be ACTIVE):"
+      gcloud auth list
+
+      echo "gcloud authentication completed successfully."
+  env:
+    GCLOUD_SERVICE_ACCOUNT_KEY: $(GCLOUD_SERVICE_ACCOUNT_KEY)  # secret pipeline variable
+
+- task: Bash@3
+  displayName: 'Zip Apigee proxy bundle'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
+      echo "Zipping Apigee proxy from $(PROXY_DIR)..."
+
+      if [ ! -d "$(PROXY_DIR)" ]; then
+        echo "ERROR: Directory $(PROXY_DIR) does not exist."
+        pwd
+        ls -R
+        exit 1
+      fi
+
+      cd "$(PROXY_DIR)"
+      zip -r "../../$(PROXY_ZIP)" apiproxy
+      cd -
+
+      echo "Created zip file:"
+      ls -la "$(PROXY_ZIP)"
+
+- task: Bash@3
+  displayName: 'Import proxy into Apigee'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
+      echo "Importing proxy $(PROXY_NAME) into Apigee org $(APIGEE_ORG)..."
+
+      ACCESS_TOKEN=$(gcloud auth print-access-token)
+
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "ERROR: Failed to get access token from gcloud."
         gcloud auth list
+        exit 1
+      fi
 
-        echo "gcloud authentication completed successfully."
-    env:
-      GCLOUD_SERVICE_ACCOUNT_KEY: $(GCLOUD_SERVICE_ACCOUNT_KEY)  # secret variable in Azure DevOps
+      # Call Apigee and capture both body + status code
+      HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
+        -X POST \
+        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+        -H "Content-Type: multipart/form-data" \
+        -F "file=@$(PROXY_ZIP)" \
+        "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?name=$(PROXY_NAME)")
 
-  - task: Bash@3
-    displayName: 'Check gcloud components (optional)'
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        gcloud components list || true
+      echo "HTTP status: $HTTP_STATUS"
+      echo "Response body:"
+      cat response.json || echo "<no body>"
 
-  - task: Bash@3
-    displayName: 'Zip Apigee proxy bundle'
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        echo "Zipping Apigee proxy from $(PROXY_DIR)..."
-        cd "$(PROXY_DIR)"
-        zip -r "../../$(PROXY_ZIP)" apiproxy
-        cd -
-        echo "Created zip:"
-        ls -la "$(PROXY_ZIP)"
+      if [ "$HTTP_STATUS" -ge 400 ]; then
+        echo "Import failed with HTTP $HTTP_STATUS"
+        exit 1
+      fi
 
-  - task: Bash@3
-    displayName: 'Import proxy into Apigee'
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        echo "Importing proxy $(PROXY_NAME) into Apigee org $(APIGEE_ORG)..."
+      echo "Proxy import completed."
 
-        ACCESS_TOKEN=$(gcloud auth print-access-token)
+- task: Bash@3
+  displayName: 'Get latest proxy revision number'
+  name: GetRevision
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
+      ACCESS_TOKEN=$(gcloud auth print-access-token)
 
-        if [ -z "$ACCESS_TOKEN" ]; then
-          echo "ERROR: Failed to get access token from gcloud."
-          gcloud auth list
-          exit 1
-        fi
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "ERROR: Failed to get access token from gcloud."
+        gcloud auth list
+        exit 1
+      fi
 
-        HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
-          -X POST \
-          -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-          -H "Content-Type: multipart/form-data" \
-          -F "file=@$(PROXY_ZIP)" \
-          "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?name=$(PROXY_NAME)")
+      echo "Fetching revisions for $(PROXY_NAME)..."
 
-        echo "HTTP status: $HTTP_STATUS"
-        echo "Response body:"
-        cat response.json || echo "<no body>"
+      REVISIONS=$(curl -s -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+        "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis/$(PROXY_NAME)/revisions")
 
-        if [ "$HTTP_STATUS" -ge 400 ]; then
-          echo "Import failed with HTTP $HTTP_STATUS"
-          exit 1
-        fi
+      echo "Revisions: $REVISIONS"
 
-        echo "Proxy import completed."
+      # Take the highest revision number
+      LATEST_REVISION=$(echo "$REVISIONS" | tr -d '[]" ' | tr ',' '\n' | sort -n | tail -1)
 
-  - task: Bash@3
-    displayName: 'Get latest proxy revision number'
-    name: GetRevision
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        ACCESS_TOKEN=$(gcloud auth print-access-token)
+      if [ -z "$LATEST_REVISION" ]; then
+        echo "ERROR: Could not determine latest revision."
+        exit 1
+      fi
 
-        if [ -z "$ACCESS_TOKEN" ]; then
-          echo "ERROR: Failed to get access token from gcloud."
-          gcloud auth list
-          exit 1
-        fi
+      echo "Latest revision is: $LATEST_REVISION"
 
-        echo "Fetching revisions for $(PROXY_NAME)..."
+      # Set a pipeline variable for later steps
+      echo "##vso[task.setvariable variable=LATEST_REVISION]$LATEST_REVISION"
 
-        REVISIONS=$(curl -s -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-          "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis/$(PROXY_NAME)/revisions")
+- task: Bash@3
+  displayName: 'Deploy proxy to Apigee environment'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -e
+      ACCESS_TOKEN=$(gcloud auth print-access-token)
 
-        echo "Revisions: $REVISIONS"
+      if [ -z "$ACCESS_TOKEN" ]; then
+        echo "ERROR: Failed to get access token from gcloud."
+        gcloud auth list
+        exit 1
+      fi
 
-        # Take the highest revision number
-        LATEST_REVISION=$(echo "$REVISIONS" | tr -d '[]" ' | tr ',' '\n' | sort -n | tail -1)
+      LATEST_REVISION=$(LATEST_REVISION)
 
-        if [ -z "$LATEST_REVISION" ]; then
-          echo "ERROR: Could not determine latest revision."
-          exit 1
-        fi
+      echo "Deploying proxy $(PROXY_NAME) revision ${LATEST_REVISION} to env $(APIGEE_ENV)..."
 
-        echo "Latest revision is: $LATEST_REVISION"
+      curl -X POST \
+        -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+        "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/environments/$(APIGEE_ENV)/apis/$(PROXY_NAME)/revisions/${LATEST_REVISION}/deployments" \
+        --fail --silent --show-error
 
-        # Set a pipeline variable for later steps
-        echo "##vso[task.setvariable variable=LATEST_REVISION]$LATEST_REVISION"
-
-  - task: Bash@3
-    displayName: 'Deploy proxy to Apigee environment'
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        ACCESS_TOKEN=$(gcloud auth print-access-token)
-
-        if [ -z "$ACCESS_TOKEN" ]; then
-          echo "ERROR: Failed to get access token from gcloud."
-          gcloud auth list
-          exit 1
-        fi
-
-        LATEST_REVISION=$(LATEST_REVISION)
-
-        echo "Deploying proxy $(PROXY_NAME) revision ${LATEST_REVISION} to env $(APIGEE_ENV)..."
-
-        curl -X POST \
-          -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-          "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/environments/$(APIGEE_ENV)/apis/$(PROXY_NAME)/revisions/${LATEST_REVISION}/deployments" \
-          --fail --silent --show-error
-
-        echo "Deployment triggered."
+      echo "Deployment triggered."
