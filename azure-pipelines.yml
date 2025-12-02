@@ -104,13 +104,12 @@ steps:
         exit 1
       fi
 
-      # Call Apigee and capture both body + status code
       HTTP_STATUS=$(curl -s -o response.json -w "%{http_code}" \
         -X POST \
         -H "Authorization: Bearer ${ACCESS_TOKEN}" \
         -H "Content-Type: multipart/form-data" \
         -F "file=@$(PROXY_ZIP)" \
-        "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?name=$(PROXY_NAME)")
+        "https://apigee.googleapis.com/v1/organizations/$(APIGEE_ORG)/apis?action=import&name=$(PROXY_NAME)")
 
       echo "HTTP status: $HTTP_STATUS"
       echo "Response body:"
