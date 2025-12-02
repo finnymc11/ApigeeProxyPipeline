@@ -171,7 +171,11 @@ steps:
         exit 1
       fi
 
-      LATEST_REVISION=$(LATEST_REVISION)
+      echo "LATEST_REVISION from previous step: $LATEST_REVISION"
+      if [ -z "$LATEST_REVISION" ]; then
+        echo "ERROR: LATEST_REVISION is not set."
+        exit 1
+      fi
 
       echo "Deploying proxy $(PROXY_NAME) revision ${LATEST_REVISION} to env $(APIGEE_ENV)..."
 
